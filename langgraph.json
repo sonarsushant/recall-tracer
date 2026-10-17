@@ -1,0 +1,8 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "investigator": "./agents.py:investigator",
+    "store_ops": "./agents.py:store_ops"
+  },
+  "env": ".env"
+}

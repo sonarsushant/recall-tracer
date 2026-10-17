@@ -1,0 +1,8 @@
+falkordb>=1.2.0
+streamlit>=1.30.0
+streamlit-agraph>=0.0.45
+mcp>=1.0.0
+langgraph>=0.2.0
+langgraph-cli[inmem]>=0.1.0
+langchain-openai>=0.2.0
+python-dotenv>=1.0.0
