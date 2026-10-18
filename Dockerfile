@@ -21,5 +21,5 @@ EXPOSE 8501 8502
 # Health check
 HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health || exit 1
 
-# Default entrypoint runs the scripted demo UI on port 8501
+# Default entrypoint runs the agent and graph UI on port 8501
 CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]

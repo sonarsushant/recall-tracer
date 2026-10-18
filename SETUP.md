@@ -148,20 +148,20 @@ ALL 7 EVALUATION CHECKS PASSED SUCCESSFULLY (Exit Code 0)
 
 ## 6. Step 5: Launch the User Interfaces
 
-### A. Launch the Streamlit Demo and Agent Chat (Port 8501)
+### A. Launch the Agent and Graph UI (Port 8501)
 ```powershell
 conda activate recall
 streamlit run app.py
 ```
-Open [http://localhost:8501](http://localhost:8501) in your browser. The scripted demo at the top works without an LLM and includes a **Load Forward Trace (GO-0611)** scenario. The **Optional LangGraph Agent Chat** section lets you select Investigator or Store Operations and chat with the graph directly; LangGraph Studio is not needed for this flow. Agent chat requires the selected LLM provider in `.env` to be configured and available. See [DEMO_WORKFLOW.md](./DEMO_WORKFLOW.md) for copy-paste prompts and the human-confirmation step.
+Open [http://localhost:8501](http://localhost:8501) in your browser. This page includes in-app agent chat, a **Quick Forward Trace** input, and live graph and task views. Agent chat requires the selected LLM provider in `.env` to be configured and available; LangGraph Studio is not needed. See [DEMO_WORKFLOW.md](./DEMO_WORKFLOW.md) for copy-paste prompts and the human-confirmation step.
 
-### B. Launch Agent Companion UI (Port 8502)
+### B. Launch the Scripted Demo and Agent Chat (Port 8502)
 In a separate terminal:
 ```powershell
 conda activate recall
-streamlit run app_agent.py --server.port 8502
+streamlit run app_demo_scripted.py --server.port 8502
 ```
-Open [http://localhost:8502](http://localhost:8502) in your browser. This window includes in-app agent chat, a **Quick Forward Trace** input, and the live graph and task visualizer; you do not need LangGraph Studio to run either agent.
+Open [http://localhost:8502](http://localhost:8502) in your browser. The scripted scenarios work without an LLM; the optional Investigator and Store Operations chat requires a configured provider.
 
 ### C. Launch LangGraph Studio (Optional)
 If you wish to inspect agent execution in Studio instead of using the in-app chat:

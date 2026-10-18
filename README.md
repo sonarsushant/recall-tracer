@@ -91,22 +91,22 @@ python scripts/check_graphs.py
 
 ### 5. Run the application
 
-Start the main Streamlit app:
+Start the agent and graph-visualization interface:
 
 ```powershell
 streamlit run app.py
 ```
 
-Open [http://localhost:8501](http://localhost:8501). The deterministic scenario runner works without an LLM. The optional **LangGraph Agent Chat** section on this page requires the configured model provider.
+Open [http://localhost:8501](http://localhost:8501). This page includes agent chat, a quick forward-trace tool, and live complaint, graph, and task views. Agent chat requires the configured model provider.
 
-To run the companion agent and graph-visualization interface in another terminal:
+To run the scripted demo and scenario runner in another terminal:
 
 ```powershell
 conda activate recall
-streamlit run app_agent.py --server.port 8502
+streamlit run app_demo_scripted.py --server.port 8502
 ```
 
-Open [http://localhost:8502](http://localhost:8502). This page includes agent chat, a quick forward-trace tool, and live complaint, graph, and task views. LangGraph Studio is optional; start it with `langgraph dev` if you want to inspect the agent execution graph.
+Open [http://localhost:8502](http://localhost:8502). The deterministic scenario runner works without an LLM; its optional **LangGraph Agent Chat** section requires the configured model provider. LangGraph Studio is optional; start it with `langgraph dev` if you want to inspect the agent execution graph.
 
 ## Try the scenarios
 
@@ -137,8 +137,8 @@ The evaluation suite reseeds the demo graphs to a known state, then runs the end
 
 | Path | Purpose |
 | --- | --- |
-| `app.py` | Scripted demo and optional Investigator / Store Operations chat (port 8501) |
-| `app_agent.py` | Agent companion UI with graph and task visualizations (port 8502) |
+| `app.py` | Agent UI with graph and task visualizations (port 8501) |
+| `app_demo_scripted.py` | Scripted demo and optional Investigator / Store Operations chat (port 8502) |
 | `agents.py` | LangGraph agent factories and typed tool definitions |
 | `investigator.py`, `store_ops.py` | Deterministic investigation and operational workflows |
 | `tools.py` | FalkorDB access, Cypher-backed tools, scoring, memory, and operational checks |
@@ -152,5 +152,5 @@ The evaluation suite reseeds the demo graphs to a known state, then runs the end
 
 - **Cannot connect to `localhost:6379`:** verify Docker is running and start FalkorDB with `docker compose up -d falkordb`.
 - **Agent reports missing model configuration:** check `LLM_PROVIDER` and its provider-specific variables in `.env`; for LM Studio, make sure the local server is running and the selected model is loaded.
-- **Port 8501 or 8502 is in use:** choose another port, for example `streamlit run app_agent.py --server.port 8503`.
+- **Port 8501 or 8502 is in use:** choose another port, for example `streamlit run app_demo_scripted.py --server.port 8503`.
 - **Missing Python module:** activate the project environment and run `pip install -r requirements.txt`.
