@@ -1,435 +1,234 @@
-"""RecallTracer scripted demo and optional in-app LangGraph chat (Port 8501)."""
+"""RecallTracer agent chat and live graph companion UI (Port 8502)."""
 
-import json
 import streamlit as st
-
 import tools
 import investigator
-import store_ops
 import graph_view
+import agent_chat
 
-# Streamlit Page Setup
-st.set_page_config(
-    page_title="RecallTracer — Incident Response Demo", layout="wide")
+# Page Config
+st.set_page_config(page_title="RecallTracer — Agent Companion Data UI", layout="wide")
 
-st.title("RecallTracer — Graph-Based Recall Investigation & Incident Response")
-st.caption("The scripted demo runs deterministically without LLM calls. Use the optional agent chat below to talk to the LangGraph agents directly in Streamlit; LangGraph Studio is not required.")
+st.title("RecallTracer — Live Agent Companion UI")
+st.caption("Chat with the Investigator or Store Operations agent here and inspect the live graph below. LangGraph Studio is optional.")
+agent_chat.render_agent_chat("RecallTracer Agent Chat")
 
-
-@st.cache_resource(show_spinner=False)
-def get_chat_agent(agent_name):
-    """Create and cache a LangGraph agent for the in-app chat."""
-    import agents
-
-    if agent_name == "investigator":
-        return agents.investigator()
-    if agent_name == "store_ops":
-        return agents.store_ops()
-    raise ValueError(f"Unsupported agent: {agent_name}")
-
-
-def final_agent_message(result):
-    """Return the final assistant response from a LangGraph agent result."""
-    for message in reversed(result.get("messages", [])):
-        if getattr(message, "type", None) != "ai" or getattr(message, "tool_calls", None):
-            continue
-        content = message.content
-        if isinstance(content, str):
-            return content
-        return json.dumps(content, ensure_ascii=False)
-    return ""
-
+col_ref, _ = st.columns([1, 6])
+if col_ref.button("🔄 Refresh Graph State", type="primary"):
+    st.rerun()
 
 # Color Legend helper
 def render_legend():
     cols = st.columns(6)
-    cols[0].markdown(
-        "<span style='color:#0e6655'>■</span> **Confirmed Lot** (`#0e6655`)", unsafe_allow_html=True)
-    cols[1].markdown(
-        "<span style='color:#6c3483'>■</span> **Inconclusive** (`#6c3483`)", unsafe_allow_html=True)
-    cols[2].markdown(
-        "<span style='color:#c0392b'>■</span> **Ruled Out / Notice** (`#c0392b`)", unsafe_allow_html=True)
-    cols[3].markdown(
-        "<span style='color:#e67e22'>■</span> **Mix Batch** (`#e67e22`)", unsafe_allow_html=True)
-    cols[4].markdown(
-        "<span style='color:#2980b9'>■</span> **Final Batch** (`#2980b9`)", unsafe_allow_html=True)
-    cols[5].markdown(
-        "<span style='color:#1e8449'>■</span> **Store / Associate** (`#1e8449`)", unsafe_allow_html=True)
+    cols[0].markdown("<span style='color:#0e6655'>■</span> **Confirmed Lot** (`#0e6655`)", unsafe_allow_html=True)
+    cols[1].markdown("<span style='color:#6c3483'>■</span> **Inconclusive** (`#6c3483`)", unsafe_allow_html=True)
+    cols[2].markdown("<span style='color:#c0392b'>■</span> **Ruled Out / Notice** (`#c0392b`)", unsafe_allow_html=True)
+    cols[3].markdown("<span style='color:#e67e22'>■</span> **Mix Batch** (`#e67e22`)", unsafe_allow_html=True)
+    cols[4].markdown("<span style='color:#2980b9'>■</span> **Final Batch** (`#2980b9`)", unsafe_allow_html=True)
+    cols[5].markdown("<span style='color:#1e8449'>■</span> **Store / Associate** (`#1e8449`)", unsafe_allow_html=True)
 
 
-# Presets Definitions
-PRESET_HERO = json.dumps([
-    {"store": "TH-01", "batch": "MP-2410-01",
-        "text": "Severe food poisoning and hospitalization after eating masala peanuts"},
-    {"store": "TH-02", "batch": "MP-2410-02",
-        "text": "Severe vomiting and fever after eating masala peanuts"},
-    {"store": "TH-03", "batch": "BH-2410-03",
-        "text": "Hospitalized with severe food poisoning after eating bhujia in Pune"}
-], indent=2)
+st.subheader("Quick Forward Trace")
+trace_col, trace_button_col = st.columns([4, 1])
+trace_lot = trace_col.text_input("Ingredient lot ID", value="GO-0611", key="quick_trace_lot")
+if trace_button_col.button("Trace lot", key="quick_trace_button"):
+    st.session_state.quick_trace_result = investigator.forward_trace_lot({"lot": trace_lot})
 
-PRESET_SALT = json.dumps([
-    {"store": "TH-05", "batch": "NK-2410-01",
-        "text": "Mild stomach discomfort from namkeen mix"},
-    {"store": "TH-06", "batch": "NK-2410-02",
-        "text": "Salty aftertaste in namkeen"},
-    {"store": "TH-07", "batch": "NK-2410-03",
-        "text": "Stomach irritation from namkeen"}
-], indent=2)
-
-PRESET_NOTICE = json.dumps({
-    "type": "notice",
-    "lot": "RX-7781",
-    "supplier": "Extracto Labs",
-    "material": "raw_extract",
-    "reason": "microbial_contamination"
-}, indent=2)
-
-PRESET_FORWARD_TRACE = json.dumps({
-    "type": "forward_trace",
-    "lot": "GO-0611"
-}, indent=2)
-
-PRESET_TYPO = json.dumps({
-    "type": "notice",
-    "lot": "GN-22l4",
-    "supplier": "AgroNuts Ltd",
-    "material": "groundnut"
-}, indent=2)
-
-PRESET_MEMORY = json.dumps([
-    {"store": "TH-03", "batch": "BH-2410-03",
-        "text": "Severe food poisoning in Pune FC Road store"}
-], indent=2)
-
-# Session state initialization
-if "draft" not in st.session_state:
-    st.session_state.draft = PRESET_HERO
-if "run_result" not in st.session_state:
-    st.session_state.run_result = None
-if "step_logs" not in st.session_state:
-    st.session_state.step_logs = []
-
-# Preset loader bar
-st.subheader("1. Incident Input & Scenario Presets")
-col1, col2, col3 = st.columns(3)
-if col1.button("📋 Load Groundnut Oil Outbreak", key="btn_hero"):
-    st.session_state.draft = PRESET_HERO
-    st.session_state.run_result = None
-if col2.button("🧂 Load Salt-Only Complaints", key="btn_salt"):
-    st.session_state.draft = PRESET_SALT
-    st.session_state.run_result = None
-if col3.button("⚠️ Load Supplier Notice (RX-7781)", key="btn_notice"):
-    st.session_state.draft = PRESET_NOTICE
-    st.session_state.run_result = None
-
-with st.expander("🔍 More Scenarios (Forward Trace, Typo Handling & Memory Replay)"):
-    subcol1, subcol2, subcol3 = st.columns(3)
-    if subcol1.button("🔤 Load Typo Lot (GN-22l4)", key="btn_typo"):
-        st.session_state.draft = PRESET_TYPO
-        st.session_state.run_result = None
-    if subcol2.button("🧠 Load Memory Replay (Pune / BH-2410-03)", key="btn_memory"):
-        st.session_state.draft = PRESET_MEMORY
-        st.session_state.run_result = None
-    if subcol3.button("➡️ Load Forward Trace (GO-0611)", key="btn_forward_trace"):
-        st.session_state.draft = PRESET_FORWARD_TRACE
-        st.session_state.run_result = None
-
-draft_input = st.text_area(
-    "Incident JSON Payload", height=180, key="draft")
-
-# Action bar
-run_btn = st.button("🚀 Run Graph Investigation", type="primary", key="btn_run")
-
-if run_btn:
-    try:
-        payload = json.loads(draft_input)
-    except Exception as e:
-        st.error(f"Invalid JSON payload: {e}")
-        payload = None
-
-    if payload is not None:
-        logs = []
-        tools.STEP_COLLECTOR.set(logs)
-        with st.spinner("Executing graph algorithms and cross-graph queries in FalkorDB..."):
-            res = investigator.complaints_from(payload)
-            # Automatic store_ops run if confirmed and not from memory
-            ops_res = None
-            if res.get("status") in {"confirmed", "closed"}:
-                ops_res = store_ops.run()
-
-        st.session_state.run_result = res
-        st.session_state.step_logs = logs
-        st.session_state.ops_res = ops_res
-
-# Display Results
-res = st.session_state.run_result
-if res:
-    st.divider()
-    st.subheader("2. Investigation Outcome & Attribution")
-
-    outcome = res.get("outcome")
-    msg = res.get("message", "")
-    confirmed_row = res.get("confirmed_row")
-
-    # Guardrail check on message
-    rows_for_guardrail = [confirmed_row] if confirmed_row else []
-    safe_msg = tools.sentence_ok(
-        msg,
-        rows_for_guardrail,
-        allow_list=[res["lot"]] if res.get("lot") else None,
-    )
-
-    if res.get("action") == "forward_trace":
-        if outcome == "unknown_entity":
-            st.warning(f"⚠️ {safe_msg}")
-            if res.get("candidates"):
-                st.info(f"Did you mean one of these existing lots? **{', '.join(res['candidates'])}**")
-        elif outcome == "not_in_graph":
-            st.info(f"ℹ️ {safe_msg}")
-        else:
-            st.success(f"➡️ **Forward Trace**: {safe_msg}")
-    elif outcome == "from_memory":
-        st.info(f"🧠 **Memory Recall**: {safe_msg}")
-        if res.get("findings"):
-            st.write("**Prior Findings Retrieved:**", res["findings"])
-    elif res.get("checklist") and outcome == "not_in_graph":
-        st.info(f"ℹ️ **No downstream exposure found**: {res.get('message', safe_msg)}")
-    elif outcome in {"unknown_entity", "not_in_graph"}:
-        st.warning(f"⚠️ {safe_msg}")
-        if res.get("candidates"):
-            st.info(
-                f"Did you mean one of these existing lots? **{', '.join(res['candidates'])}**")
+quick_trace = st.session_state.get("quick_trace_result")
+if quick_trace:
+    if quick_trace.get("outcome") == "unknown_entity":
+        st.warning(quick_trace.get("message"))
+        if quick_trace.get("candidates"):
+            st.caption(f"Did you mean: {', '.join(quick_trace['candidates'])}?")
+    elif quick_trace.get("outcome") == "not_in_graph":
+        st.info(quick_trace.get("message"))
     else:
-        st.success(f"🎯 **Attribution Result**: {safe_msg}")
+        st.success(quick_trace.get("message"))
 
-    if res.get("action") == "forward_trace":
-        st.markdown(f"### Downstream Trace for `{res.get('lot')}`")
-        trace_rows = res.get("trace", {}).get("rows", [])
-        if trace_rows:
-            trace_row = trace_rows[0]
-            st.write(f"**Stores reached:** {', '.join(sorted(set(trace_row.get('stores', [])))) or 'None'}")
-            st.write(f"**Purchases found:** {trace_row.get('purchases', 0)}")
-            batch_rows = trace_row.get("trace", [])
-            if batch_rows:
-                st.dataframe(
-                    [{"Batch": row.get("id"), "Product": row.get("name")} for row in batch_rows],
-                    use_container_width=True,
-                )
-        if res.get("graph_payload"):
-            render_legend()
-            graph_view.render_agraph(
-                res["graph_payload"],
-                height=520,
-                width=1400,
-                key="demo-forward-trace",
+    trace_result = quick_trace.get("trace", {}).get("rows", [])
+    if trace_result:
+        trace_row = trace_result[0]
+        st.write(f"**Stores reached:** {', '.join(sorted(set(trace_row.get('stores', [])))) or 'None'}")
+        st.write(f"**Purchases found:** {trace_row.get('purchases', 0)}")
+        if trace_row.get("trace"):
+            st.dataframe(
+                [{"Batch": row.get("id"), "Product": row.get("name")} for row in trace_row["trace"]],
+                use_container_width=True,
             )
 
-    if res.get("checklist"):
-        st.markdown("### Supplier Notice Checklist")
-        st.dataframe([res["checklist"]], use_container_width=True)
-        if res.get("graph_payload"):
-            st.markdown("### Supplier Notice Context Graph")
-            render_legend()
-            graph_view.render_agraph(
-                res["graph_payload"],
-                height=420,
-                width=1400,
-                key="demo-notice-context",
-            )
-
-        if outcome == "not_in_graph":
-            st.info(
-                "No product batches or stores are downstream of this lot, so there is no product exposure to recall and no store pull task is dispatched."
-            )
-
-    # Ranking Visualizations & Table
-    rank1 = res.get("rank1")
-    rank2 = res.get("rank2")
-
-    if rank1 or rank2:
-        ranking_rows = (rank1 or {}).get("rows", []) + (rank2 or {}).get("rows", [])
-        if outcome == "not_in_graph" and any(row.get("status") == "ruled_out" for row in ranking_rows):
-            st.info(
-                "No ingredient met the recall threshold. The shared candidate is ruled out for low specificity; no root cause is confirmed and no recall tasks are authorized."
-            )
-
-        st.markdown("### Graph Attribution Analysis")
+    if quick_trace.get("graph_payload"):
         render_legend()
+        graph_view.render_agraph(
+            quick_trace["graph_payload"],
+            height=520,
+            width=1400,
+            key="agent-quick-forward-trace",
+        )
 
-        tabs = st.tabs(["Depth 1 (Direct Ingredients)", "Depth 2 (Intermediate Mixes)"] if rank2 else [
-                       "Depth 1 (Direct Ingredients)"])
+# Fetch Current Graph State
+complaints = tools._run_query("bazaarmart", "complaints")
+inv_complaints_res = tools.load_investigation("INV-COMPLAINTS")
+inv_notice_res = tools.load_investigation("INV-NOTICE")
 
-        with tabs[0]:
-            if rank1 and rank1.get("graph_payload"):
+inv_c = inv_complaints_res["rows"][0] if inv_complaints_res["rows"] else None
+inv_n = inv_notice_res["rows"][0] if inv_notice_res["rows"] else None
+
+has_complaints = len(complaints) > 0
+has_active_notice = inv_n and inv_n.get("lot_id")
+
+if not has_complaints and not has_active_notice:
+    st.info("The database has no active complaints or notice. Submit a complaint list or supplier notice in the Investigator chat above, then refresh the graph state.")
+else:
+    # --------------------------------------------------------------------------
+    # 1. COMPLAINT & ATTRIBUTION SECTION
+    # --------------------------------------------------------------------------
+    if has_complaints:
+        st.subheader("1. Active Incident Complaints & Upstream Attribution")
+        st.markdown(f"**Recorded Complaints in BazaarMart:** {len(complaints)} items")
+        st.dataframe(complaints, use_container_width=True)
+
+        batch_ids = list({c["batch"] for c in complaints})
+        res_upstream = tools.lots_behind(batch_ids)
+        upstream_lots = list({r.get("lot") for r in res_upstream["rows"] if r.get("lot")})
+
+        # Check organizational memory
+        memory_found = False
+        memory_lot = None
+        for l in upstream_lots:
+            mem_res = tools.recall_findings(l)
+            if mem_res["outcome"] == "from_memory":
+                memory_found = True
+                memory_lot = l
+                st.info(f"🧠 **Organizational Memory Match**: Lot `{l}` was previously confirmed as a contaminated root cause.")
+                st.dataframe(mem_res["rows"], use_container_width=True)
+                break
+
+        if memory_found:
+            st.markdown("#### Upstream Trace Graph (from Memory)")
+            render_legend()
+            if res_upstream.get("graph_payload"):
                 graph_view.render_agraph(
-                    rank1["graph_payload"],
+                    res_upstream["graph_payload"],
                     height=520,
                     width=1400,
-                    key="demo-candidate-depth-1",
+                    key="agent-memory-upstream",
                 )
-            st.markdown("#### Candidate Lot Rankings (Depth 1)")
-            if rank1 and rank1.get("rows"):
-                st.dataframe(rank1["rows"], use_container_width=True)
+        else:
+            # Graph Ranking
+            st.markdown("#### Candidate Lot Attribution")
+            render_legend()
 
-        if rank2 and len(tabs) > 1:
-            with tabs[1]:
-                if rank2.get("graph_payload"):
+            r1 = tools.rank_lots(depth=1)
+            confirmed_in_r1 = any(r.get("status") == "confirmed" for r in r1.get("rows", []))
+
+            r2 = None
+            if not confirmed_in_r1:
+                r2 = tools.rank_lots(depth=2)
+
+            tabs = st.tabs(["Depth 1 (Direct Ingredients)", "Depth 2 (Intermediate Mixes)"] if r2 else ["Depth 1 (Direct Ingredients)"])
+            with tabs[0]:
+                if r1.get("graph_payload"):
                     graph_view.render_agraph(
-                        rank2["graph_payload"],
+                        r1["graph_payload"],
                         height=520,
                         width=1400,
-                        key="demo-candidate-depth-2",
+                        key="agent-candidate-depth-1",
                     )
-                st.markdown(
-                    "#### Candidate Lot Rankings (Depth 2 — Multi-Hop Mix Attribution)")
-                if rank2.get("rows"):
-                    st.dataframe(rank2["rows"], use_container_width=True)
+                st.dataframe(r1.get("rows", []), use_container_width=True)
 
-        # Human Confirmation Button directly beneath ranking
-        inv_data = tools.load_investigation("INV-COMPLAINTS").get("rows", [])
-        inv_status = inv_data[0].get("status") if inv_data else None
+            if r2 and len(tabs) > 1:
+                with tabs[1]:
+                    if r2.get("graph_payload"):
+                        graph_view.render_agraph(
+                            r2["graph_payload"],
+                            height=520,
+                            width=1400,
+                            key="agent-candidate-depth-2",
+                        )
+                    st.dataframe(r2.get("rows", []), use_container_width=True)
 
-        if inv_status == "open":
+            ranked_rows = r1.get("rows", []) + (r2.get("rows", []) if r2 else [])
+            if (
+                not any(row.get("status") == "confirmed" for row in ranked_rows)
+                and any(row.get("status") == "ruled_out" for row in ranked_rows)
+            ):
+                st.info(
+                    "No ingredient met the recall threshold. The shared candidate is ruled out for low specificity; no root cause is confirmed and no recall tasks are authorized."
+                )
+
+        # ----------------------------------------------------------------------
+        # Human Confirmation Button
+        # ----------------------------------------------------------------------
+        if inv_c and inv_c.get("status") == "open" and inv_c.get("lot_id"):
             st.markdown("---")
-            st.warning(
-                "⚠️ Investigation status is currently **OPEN**. Human confirmation is required before store pull tasks can be dispatched.")
-            if st.button("✅ Confirm Root Cause & Save Finding", type="primary", key="btn_confirm"):
-                conf_res = investigator.confirm()
-                st.success(conf_res.get("message"))
-                # Automatically run store_ops
-                st.session_state.ops_res = store_ops.run()
+            st.warning(f"⚠️ Investigation for lot **{inv_c.get('lot_id')}** is **OPEN**. Human confirmation is required before store pull dispatch.")
+            if st.button(f"🛡️ Confirm Class I Recall for {inv_c.get('lot_id')}", type="primary"):
+                c_res = investigator.confirm()
+                st.success(c_res.get("message"))
                 st.rerun()
 
-    # Store Operations & Shelves Block
-    inv_data = tools.load_investigation("INV-COMPLAINTS").get("rows", [])
-    current_status = inv_data[0].get("status") if inv_data else None
+        # ----------------------------------------------------------------------
+        # Shelf View & Task Monitor
+        # ----------------------------------------------------------------------
+        if inv_c and inv_c.get("status") in {"confirmed", "closed"}:
+            st.divider()
+            st.subheader("2. Store Shelves & Pull Task Coordination")
+            render_legend()
 
-    if current_status in {"confirmed", "closed"}:
-        st.divider()
-        st.subheader("3. Store Operations & Shelf Pull Visualizer")
-        render_legend()
+            shelf_view_data = tools.shelf_view("INV-COMPLAINTS")
+            if shelf_view_data.get("graph_payload"):
+                graph_view.render_agraph(
+                    shelf_view_data["graph_payload"],
+                    height=820,
+                    width=1400,
+                    key="agent-shelf-view",
+                )
 
-        shelf_data = tools.shelf_view("INV-COMPLAINTS")
-        if shelf_data.get("graph_payload"):
-            graph_view.render_agraph(
-                shelf_data["graph_payload"],
-                height=820,
-                width=1400,
-                key="demo-shelf-view",
-            )
-
-        # Dispatched tasks
-        tasks = tools.tasks_for("INV-COMPLAINTS").get("rows", [])
-        if tasks:
-            st.markdown(f"#### Active Dispatched Tasks ({len(tasks)} Stores)")
-            tcols = st.columns(min(len(tasks), 4))
-            for idx, task in enumerate(tasks):
-                col_idx = idx % len(tcols)
-                with tcols[col_idx]:
-                    st.markdown(f"**Task ID**: `{task.get('id')}`")
-                    st.write(f"🏢 **Store**: {task.get('store')}")
-                    st.write(f"📍 **Location**: {task.get('location_code')}")
-                    st.write(f"👤 **Assignee**: {task.get('assignee_name')}")
-                    st.write(
-                        f"📦 **Batch**: `{task.get('batch')}` ({task.get('qty')} units)")
-                    st.write(f"⏰ **Due By**: {task.get('due_by')}")
-                    st.write(f"Status: **{task.get('status').upper()}**")
-                    if task.get("status") != "done":
-                        if st.button(f"Mark Done", key=f"btn_done_{task.get('id')}"):
-                            tools.mark_done(task.get("id"))
-                            st.success(
-                                f"Task {task.get('id')} marked as done!")
-                            st.rerun()
-
-st.divider()
-st.subheader("4. Optional LangGraph Agent Chat")
-st.caption("Choose an agent and send a message here. The scripted controls above do not use an LLM; agent chat requires the model configured in `.env` to be available.")
-
-agent_name = st.selectbox(
-    "Agent",
-    options=["investigator", "store_ops"],
-    format_func=lambda name: "Investigator" if name == "investigator" else "Store Operations",
-    key="chat_agent_name",
-)
-chat_state_key = f"agent_chat_{agent_name}"
-if chat_state_key not in st.session_state:
-    st.session_state[chat_state_key] = []
-
-for chat_message in st.session_state[chat_state_key]:
-    with st.chat_message(chat_message["role"]):
-        st.markdown(chat_message["content"])
-
-chat_prompt = st.chat_input("Message the selected RecallTracer agent")
-if chat_prompt:
-    if agent_name == "investigator":
-        st.session_state.chat_investigation_status = None
-        st.session_state.chat_investigation_lot = ""
-    conversation = st.session_state[chat_state_key] + [
-        {"role": "user", "content": chat_prompt}
-    ]
-    try:
-        chat_agent = get_chat_agent(agent_name)
-    except RuntimeError as exc:
-        st.error(f"Could not start the agent: {exc}")
-    else:
-        with st.spinner(f"{agent_name.replace('_', ' ').title()} agent is working..."):
-            response = chat_agent.invoke({"messages": conversation})
-
-        answer = final_agent_message(response)
-        if not answer:
-            st.error("The agent returned no final response.")
-        else:
-            st.session_state[chat_state_key] = conversation + [
-                {"role": "assistant", "content": answer}
-            ]
-            st.rerun()
-
-if agent_name == "investigator":
-    st.caption("For an open complaint investigation, refresh its status below and confirm it here before asking Store Operations to dispatch tasks.")
-    if st.button("Refresh complaint investigation status", key="refresh_chat_investigation"):
-        investigation = tools.load_investigation(
-            "INV-COMPLAINTS").get("rows", [])
-        st.session_state.chat_investigation_status = (
-            investigation[0].get("status") if investigation else "not found"
-        )
-        st.session_state.chat_investigation_lot = (
-            investigation[0].get("lot_id") if investigation else ""
-        )
-
-    investigation_status = st.session_state.get("chat_investigation_status")
-    if investigation_status:
-        st.write(
-            f"Complaint investigation: **{investigation_status}**"
-            + (
-                f" — lot `{st.session_state.get('chat_investigation_lot')}`"
-                if st.session_state.get("chat_investigation_lot")
-                else ""
-            )
-        )
-    if investigation_status == "open":
-        if st.button("Confirm root cause and save finding", type="primary", key="chat_confirm"):
-            confirmation = investigator.confirm()
-            st.session_state.chat_investigation_status = confirmation.get(
-                "status")
-            if confirmation.get("status") == "confirmed":
-                st.success(confirmation.get("message"))
+            tasks = tools.tasks_for("INV-COMPLAINTS").get("rows", [])
+            if not tasks:
+                st.info("Select **Store Operations** in the agent chat above and ask it to pull the confirmed lot, then refresh the graph state.")
             else:
-                st.warning(confirmation.get("message"))
+                st.markdown(f"#### Active Dispatched Tasks ({len(tasks)} Stores)")
+                cols = st.columns(min(len(tasks), 4))
+                for idx, t in enumerate(tasks):
+                    with cols[idx % len(cols)]:
+                        st.markdown(f"**Task**: `{t.get('id')}`")
+                        st.write(f"🏢 Store: **{t.get('store')}**")
+                        st.write(f"📍 Location: **{t.get('location_code')}**")
+                        st.write(f"👤 Associate: **{t.get('assignee_name')}**")
+                        st.write(f"📦 Batch: `{t.get('batch')}` ({t.get('qty')} units)")
+                        st.write(f"⏰ Due: {t.get('due_by')}")
+                        st.write(f"Status: `{t.get('status').upper()}`")
+                        if t.get("status") != "done":
+                            if st.button("Mark Done", key=f"agent_done_{t.get('id')}"):
+                                tools.mark_done(t.get("id"))
+                                st.rerun()
 
-# Tool Trace Table Expander
-with st.expander("🛠️ Tool Execution Trace (Telemetry & Timing)"):
-    logs = st.session_state.get("step_logs", [])
-    if logs:
-        trace_table = []
-        for l in logs:
-            tr = l.get("trace", {})
-            trace_table.append({
-                "Tool": tr.get("tool"),
-                "Outcome": l.get("outcome"),
-                "Rows": tr.get("n_rows"),
-                "Execution (ms)": tr.get("ms"),
-                "Arguments": json.dumps(tr.get("args", {}))
-            })
-        st.dataframe(trace_table, use_container_width=True)
-    else:
-        st.write("No execution trace logs in session yet.")
+    # --------------------------------------------------------------------------
+    # 2. SUPPLIER RECALL NOTICE SECTION
+    # --------------------------------------------------------------------------
+    if has_active_notice:
+        st.divider()
+        st.subheader("Supplier Notice Context & Exposure")
+        lot_id = inv_n.get("lot_id")
+        n_ctx = tools.notice_context(lot_id)
+        checklist = n_ctx.get("rows", [{}])[0]
+        notice_status = inv_n.get("status", "unknown")
+        if checklist.get("used_in_a_product"):
+            st.info(
+                f"Notice investigation status: **{notice_status}**. The lot has downstream product use; review its trace and shelf exposure before acting."
+            )
+        else:
+            st.info(
+                f"Notice investigation status: **{notice_status}**. The graph shows the supplier and notice linked to `{lot_id}`, with no outgoing product-use links; no store recall tasks are needed."
+            )
+
+        if n_ctx.get("graph_payload"):
+            graph_view.render_agraph(
+                n_ctx["graph_payload"],
+                height=400,
+                width=1400,
+                key="agent-notice-context",
+            )
+        st.markdown("#### Supplier Notice Checklist")
+        st.dataframe([checklist], use_container_width=True)
