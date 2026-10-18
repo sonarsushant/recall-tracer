@@ -2,6 +2,9 @@
 
 RecallTracer is a graph-powered product incident and recall investigation demo. It combines supply-chain provenance with retailer operations data so investigators can trace reported batches to ingredient lots, assess downstream exposure, and coordinate store actions with a human confirmation gate.
 
+# Blog Post: https://medium.com/@virajsonar/dont-let-your-ai-agent-guess-0e207e657a1d
+# Video Demo: https://www.youtube.com/watch?v=JdcYg0kVkhQ
+
 ## What it demonstrates
 
 - **Multi-hop provenance:** follow ingredient lots through intermediate mixes to finished product batches.
