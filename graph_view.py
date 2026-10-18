@@ -3,6 +3,8 @@ graph_view.py - Graph drawing payload builder for streamlit-agraph.
 Constructs directed hierarchical graph visualization payloads using the RecallTracer palette.
 """
 
+import json
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 # Exact color palette specified in section 4
@@ -17,6 +19,8 @@ COLOR_SECTION = "#1a5276"       # Navy: Section
 COLOR_AISLE = "#5d6d7e"         # Gray-blue: Aisle
 COLOR_ASSOCIATE = "#148f77"     # Light teal: Associate on duty
 COLOR_NO_LINK = "#95a5a6"       # Gray: No link, or delivered with nothing on the shelf
+
+_agraph_component = None
 
 
 def _make_node(node_id: str, label: str, color: str, title: Optional[str] = None, shape: str = "box") -> Dict[str, Any]:
@@ -204,7 +208,8 @@ def shelves(shelf_rows: List[Dict[str, Any]], lot_id: Optional[str] = None, mix_
 
 def notice_gap(notice_data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Draws supplier -> lot <- notice. Never invent a fake product node when used_in == 0.
+    Draws the supplier and recall-notice links to the lot. Never invent a product
+    node when used_in == 0, so the absence of downstream edges stays explicit.
     """
     nodes_dict: Dict[str, Dict[str, Any]] = {}
     edges_list: List[Dict[str, Any]] = []
@@ -218,7 +223,11 @@ def notice_gap(notice_data: Dict[str, Any]) -> Dict[str, Any]:
         nodes_dict[supplier] = _make_node(supplier, f"Supplier\n{supplier}", COLOR_STORE)
 
     if lot_id:
-        nodes_dict[lot_id] = _make_node(lot_id, f"{material}\n{lot_id}", COLOR_CONFIRMED)
+        usage = notice_data.get("used_in", 0)
+        label = f"{material}\n{lot_id}"
+        if usage == 0:
+            label += "\n(no downstream use)"
+        nodes_dict[lot_id] = _make_node(lot_id, label, COLOR_RULED_OUT)
 
     if notice_id:
         nodes_dict[notice_id] = _make_node(notice_id, f"Notice\n{notice_id}", COLOR_NOTICE)
@@ -234,7 +243,11 @@ def notice_gap(notice_data: Dict[str, Any]) -> Dict[str, Any]:
         "edges": edges_list,
         "highlight": [lot_id] if lot_id else [],
         "query": "notice_context",
-        "note": "Supplier recall notice with zero downstream product usage"
+        "note": (
+            "Supplier and notice links terminate at the ingredient lot; no downstream product links."
+            if notice_data.get("used_in", 0) == 0
+            else "Supplier recall notice and ingredient lot"
+        )
     }
 
 
@@ -285,15 +298,90 @@ def upstream(upstream_rows: List[Dict[str, Any]], max_nodes: int = 60) -> Dict[s
     }
 
 
-def render_agraph(graph_payload: Dict[str, Any], height: int = 520, width: int = 1400):
+def forward_trace(lot_id: str, trace_rows: List[Dict[str, Any]], max_nodes: int = 60) -> Dict[str, Any]:
+    """Draw the ingredient-to-finished-batch paths returned by a forward trace."""
+    nodes_dict: Dict[str, Dict[str, Any]] = {}
+    edges_set: Set[str] = set()
+    edges_list: List[Dict[str, Any]] = []
+
+    def add_edge(src: str, dst: str, label: str) -> None:
+        edge_key = f"{src}->{dst}:{label}"
+        if edge_key not in edges_set:
+            edges_set.add(edge_key)
+            edges_list.append(_make_edge(src, dst, label))
+
+    nodes_dict[lot_id] = _make_node(
+        lot_id, f"Ingredient lot\n{lot_id}", COLOR_INCONCLUSIVE
+    )
+
+    for row in trace_rows:
+        path = row.get("path", [])
+        if not path:
+            continue
+
+        for index, node_id in enumerate(path):
+            if node_id not in nodes_dict and len(nodes_dict) < max_nodes:
+                is_final_batch = index == len(path) - 1
+                label = f"Batch\n{node_id}" if is_final_batch else f"Mix\n{node_id}"
+                color = COLOR_FINAL_BATCH if is_final_batch else COLOR_MIX
+                nodes_dict[node_id] = _make_node(node_id, label, color)
+            if index > 0 and path[index - 1] in nodes_dict and node_id in nodes_dict:
+                add_edge(path[index - 1], node_id, "USED_IN")
+
+        batch_id = row.get("id")
+        product_name = row.get("name")
+        product_id = f"PRODUCT-{product_name}" if product_name else ""
+        if (
+            batch_id in nodes_dict
+            and product_id
+            and len(nodes_dict) < max_nodes
+        ):
+            nodes_dict.setdefault(
+                product_id,
+                _make_node(product_id, f"Product\n{product_name}", COLOR_FINAL_BATCH),
+            )
+            add_edge(batch_id, product_id, "OF_PRODUCT")
+
+    return {
+        "nodes": list(nodes_dict.values())[:max_nodes],
+        "edges": edges_list,
+        "highlight": [lot_id],
+        "query": "forward_trace",
+        "note": (
+            "Forward trace from ingredient lot to finished batches and products"
+            if trace_rows
+            else "No finished batches found downstream of this ingredient lot"
+        )
+    }
+
+
+def render_agraph(
+    graph_payload: Dict[str, Any],
+    height: int = 520,
+    width: int = 1400,
+    key: str = "recalltracer-graph",
+):
     """
     Helper function to render a streamlit-agraph chart in Streamlit UI.
     Configured with directed=True, physics=False, hierarchical layout left-to-right (direction='LR').
+    Uses a keyed component wrapper because streamlit-agraph's agraph() does not expose a key.
     """
+    global _agraph_component
+
     try:
-        from streamlit_agraph import agraph, Node, Edge, Config
+        from streamlit_agraph import Node, Edge, Config
     except ImportError:
         return None
+
+    if _agraph_component is None:
+        import streamlit.components.v1 as components
+        import streamlit_agraph
+
+        component_path = Path(streamlit_agraph.__file__).parent / "frontend" / "build"
+        _agraph_component = components.declare_component(
+            "recalltracer_agraph",
+            path=str(component_path),
+        )
 
     raw_nodes = graph_payload.get("nodes", [])
     raw_edges = graph_payload.get("edges", [])
@@ -328,4 +416,12 @@ def render_agraph(graph_payload: Dict[str, Any], height: int = 520, width: int =
         direction="LR"
     )
 
-    return agraph(nodes=nodes, edges=edges, config=config)
+    data = {
+        "nodes": [node.to_dict() for node in nodes],
+        "edges": [edge.to_dict() for edge in edges],
+    }
+    return _agraph_component(
+        data=json.dumps(data),
+        config=json.dumps(config.__dict__),
+        key=key,
+    )

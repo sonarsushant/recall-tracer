@@ -3,4 +3,5 @@ __pycache__/
 .env
 scratch/
 .pytest_cache/
-.env.example
+.langgraph_api/*
+.langgraph_api/.langgraph_ops.pckl

@@ -14,7 +14,7 @@ This document provides complete instructions for setting up the local developmen
 | **Database Ports** | `6379` (FalkorDB Cypher/Redis), `3000` (FalkorDB Web Browser) |
 | **Python Environment** | Python 3.11 (via Conda or venv) |
 | **Web Applications** | Streamlit on Port `8501` (Demo UI) & Port `8502` (Agent Companion UI) |
-| **Agent Framework** | LangGraph / LangChain OpenAI |
+| **Agent Framework** | LangGraph / LangChain OpenAI-compatible chat models |
 
 ---
 
@@ -75,8 +75,11 @@ FALKOR_HOST=localhost
 FALKOR_PORT=6379
 OPENAI_API_KEY=your_openai_api_key_here
 OPENAI_MODEL=gpt-4o-mini
+LLM_PROVIDER=lm_studio
+LM_STUDIO_MODEL=qwen/qwen3-4b-2507
 ```
-*(Note: An OpenAI API key is only needed when running the LangGraph LLM agents; the scripted demo UI and evaluation suite run 100% locally and deterministically with zero API keys).*
+
+`LLM_PROVIDER` selects the backend for both LangGraph agents. Set it to `lm_studio` to use a locally running LM Studio server, or `openai` to use OpenAI. The default LM Studio endpoint for local runs is `http://localhost:1234/v1`; change `LM_STUDIO_BASE_URL` if LM Studio is listening elsewhere. With Docker Compose, the default endpoint is `http://host.docker.internal:1234/v1`, which lets the container connect to LM Studio on the host. Make sure the selected model is loaded and the LM Studio local server is running. `OPENAI_API_KEY` is required only when `LLM_PROVIDER=openai`; the scripted demo UI and evaluation suite run locally and deterministically without LLM API keys.
 
 ---
 
@@ -129,13 +132,13 @@ Seeding database to pristine state...
 ================================================================================
 #   | Check Description                                | Status | Details
 --------------------------------------------------------------------------------
-1   | Hero complaints, depth 1                         | PASS   | GN status=inconclusive, cov=0.67, salt score=0.3
-2   | Hero complaints, depth 2                         | PASS   | GN status=confirmed, cov=1.0, score=0.75, mix found=True
-3   | Salt-only complaints on three namkeen batches    | PASS   | Confirmed rows in depth 1: 0, depth 2: 0
+1   | Hero complaints, depth 1 rejects salt            | PASS   | salt status=ruled_out, coverage=1.0, score=0.3, groundnut oil absent=True
+2   | Depth 2 groundnut-oil recall dispatch            | PASS   | GO status=confirmed, cov=1.0, score=0.5, traced batches=7, stores dispatched=6
+3   | Salt-only complaints on three namkeen batches    | PASS   | salt depth-1=ruled_out, LOT-011 depth-2 path through mix=True, depth-1/depth-2 graphs differ=True, confirmed candidates=0
 4   | notice('RX-7781') then store_ops.run()           | PASS   | INV-NOTICE status=no_link, new tasks dispatched=0
 5   | notice('GN-22l4') (lowercase L typo)             | PASS   | outcome=unknown_entity, candidates=['GN-2214'], forward_trace_called=False
-6   | forward_trace('RP-0099')                         | PASS   | purchases=2
-7   | Save GN-2214 finding & memory replay Pune / BH-2410-03 | PASS   | outcome=from_memory, lots_behind_in_trace=True, rank_lots_in_trace=False
+6   | forward_trace('RP-0099')                         | PASS   | purchases=2, standalone scenario outcome=answered, graph includes product link=True
+7   | Save GO-0611 finding & memory replay Pune / BH-2410-03 | PASS   | outcome=from_memory, lots_behind_in_trace=True, rank_lots_in_trace=False
 ================================================================================
 
 ALL 7 EVALUATION CHECKS PASSED SUCCESSFULLY (Exit Code 0)
@@ -145,11 +148,12 @@ ALL 7 EVALUATION CHECKS PASSED SUCCESSFULLY (Exit Code 0)
 
 ## 6. Step 5: Launch the User Interfaces
 
-### A. Launch Scripted Demo UI (Port 8501)
+### A. Launch the Streamlit Demo and Agent Chat (Port 8501)
 ```powershell
+conda activate recall
 streamlit run app.py
 ```
-Open [http://localhost:8501](http://localhost:8501) in your browser.
+Open [http://localhost:8501](http://localhost:8501) in your browser. The scripted demo at the top works without an LLM and includes a **Load Forward Trace (GO-0611)** scenario. The **Optional LangGraph Agent Chat** section lets you select Investigator or Store Operations and chat with the graph directly; LangGraph Studio is not needed for this flow. Agent chat requires the selected LLM provider in `.env` to be configured and available. See [DEMO_WORKFLOW.md](./DEMO_WORKFLOW.md) for copy-paste prompts and the human-confirmation step.
 
 ### B. Launch Agent Companion UI (Port 8502)
 In a separate terminal:
@@ -157,10 +161,10 @@ In a separate terminal:
 conda activate recall
 streamlit run app_agent.py --server.port 8502
 ```
-Open [http://localhost:8502](http://localhost:8502) in your browser.
+Open [http://localhost:8502](http://localhost:8502) in your browser. This window includes in-app agent chat, a **Quick Forward Trace** input, and the live graph and task visualizer; you do not need LangGraph Studio to run either agent.
 
 ### C. Launch LangGraph Studio (Optional)
-If you wish to test with LangGraph Studio:
+If you wish to inspect agent execution in Studio instead of using the in-app chat:
 ```powershell
 langgraph dev
 ```
@@ -174,6 +178,9 @@ langgraph dev
 
 * **Issue: `ModuleNotFoundError: No module named 'streamlit_agraph'`**  
   *Solution:* Ensure you activated the Python 3.11 conda environment (`conda activate recall`) before launching Streamlit.
+
+* **Issue: `langgraph dev` fails with `AttributeError: module 'langgraph_api' has no attribute 'logging'` on Windows**
+  *Solution:* This can be caused by the missing `colorama` dependency used by LangGraph's colored console logger. Install the project dependencies with `pip install -r requirements.txt` (or run `python -m pip install colorama` in the active environment), then retry `langgraph dev`.
 
 * **Issue: Port conflict on `8501` or `8502`**  
   *Solution:* Specify a different port using `--server.port <port_number>`.

@@ -53,6 +53,7 @@ def seed_database():
         {"id": "GN-2214", "material": "groundnut", "kind": "ingredient", "supplier_id": "SUP-001"},
         {"id": "SL-0042", "material": "salt", "kind": "ingredient", "supplier_id": "SUP-002"},
         {"id": "PO-0611", "material": "palm_oil", "kind": "ingredient", "supplier_id": "SUP-003"},
+        {"id": "GO-0611", "material": "groundnut_oil", "kind": "ingredient", "supplier_id": "SUP-003"},
         {"id": "RP-0099", "material": "red_pepper", "kind": "ingredient", "supplier_id": "SUP-004"},
         {"id": "RX-7781", "material": "raw_extract", "kind": "ingredient", "supplier_id": "SUP-005"},
         {"id": "ZP-0412", "material": "zipper", "kind": "component", "supplier_id": "SUP-013"},
@@ -62,7 +63,7 @@ def seed_database():
         {"id": "SP-0202", "material": "spices_mix", "kind": "ingredient", "supplier_id": "SUP-004"}
     ]
     # Fill remaining lots to 90
-    for i in range(11, 91):
+    for i in range(11, 90):
         lots.append({
             "id": f"LOT-{i:03d}",
             "material": f"material_{i}",
@@ -86,6 +87,7 @@ def seed_database():
         {"id": "PROD-016", "name": "Masala Peanuts", "brand": "BazaarSelect", "category": "packaged_food"},
         {"id": "PROD-017", "name": "Bhujia", "brand": "BazaarSelect", "category": "packaged_food"},
         {"id": "PROD-018", "name": "Tasty Namkeen Mix", "brand": "BazaarSelect", "category": "packaged_food"},
+        {"id": "PROD-019", "name": "Groundnut Chikki", "brand": "BazaarSelect", "category": "packaged_food"},
         {"id": "PROD-045", "name": "Kidswear Style 1", "brand": "BazaarStyle", "category": "apparel"},
         {"id": "PROD-046", "name": "Kidswear Style 2", "brand": "BazaarStyle", "category": "apparel"}
     ]
@@ -97,22 +99,19 @@ def seed_database():
                 prod.category = $category
         """, p)
 
-    # Intermediate Mix RG-2409-04
+    # Groundnut-oil intermediate batch links the root-cause lot to all hero products.
     net.query("""
-        MERGE (m:Batch {id: 'RG-2409-04'})
-        SET m.name = 'Roasted Groundnut Mix RG-2409-04',
+        MERGE (m:Batch {id: 'GOM-2409-04'})
+        SET m.name = 'Groundnut Oil Blend GOM-2409-04',
             m.kind = 'mix',
             m.mfd = '2026-10-02'
         WITH m
-        MATCH (gn:Lot {id: 'GN-2214'})
-        MERGE (gn)-[:USED_IN]->(m)
-        WITH m
-        MATCH (sl:Lot {id: 'SL-0042'})
-        MERGE (sl)-[:USED_IN]->(m)
+        MATCH (go:Lot {id: 'GO-0611'})
+        MERGE (go)-[:USED_IN]->(m)
     """)
 
     # Finished Batches for Masala Peanuts (MP-2410-01, MP-2410-02)
-    # Direct 1-hop from GN-2214, SL-0042, PO-0611
+    # Salt is direct; groundnut oil reaches these through GOM-2409-04.
     net.query("""
         UNWIND ['MP-2410-01', 'MP-2410-02'] AS b_id
         MERGE (b:Batch {id: b_id})
@@ -123,18 +122,18 @@ def seed_database():
         MATCH (p:Product {id: 'PROD-016'})
         MERGE (b)-[:OF_PRODUCT]->(p)
         WITH b
-        MATCH (gn:Lot {id: 'GN-2214'})
-        MERGE (gn)-[:USED_IN]->(b)
-        WITH b
         MATCH (sl:Lot {id: 'SL-0042'})
         MERGE (sl)-[:USED_IN]->(b)
         WITH b
         MATCH (po:Lot {id: 'PO-0611'})
         MERGE (po)-[:USED_IN]->(b)
+        WITH b
+        MATCH (m:Batch {id: 'GOM-2409-04'})
+        MERGE (m)-[:USED_IN]->(b)
     """)
 
     # Finished Batches for Bhujia (BH-2410-03, BH-2410-04)
-    # 2-hop from GN-2214 via RG-2409-04, 1-hop from SL-0042
+    # Groundnut oil reaches Bhujia through the intermediate blend; salt remains direct.
     net.query("""
         UNWIND ['BH-2410-03', 'BH-2410-04'] AS b_id
         MERGE (b:Batch {id: b_id})
@@ -145,7 +144,7 @@ def seed_database():
         MATCH (p:Product {id: 'PROD-017'})
         MERGE (b)-[:OF_PRODUCT]->(p)
         WITH b
-        MATCH (m:Batch {id: 'RG-2409-04'})
+        MATCH (m:Batch {id: 'GOM-2409-04'})
         MERGE (m)-[:USED_IN]->(b)
         WITH b
         MATCH (sl:Lot {id: 'SL-0042'})
@@ -155,8 +154,28 @@ def seed_database():
         MERGE (bs)-[:USED_IN]->(b)
     """)
 
+    # Additional downstream products with no complaints yet, but still in recall scope.
+    extra_oil_batches = [
+        {"id": "MP-2410-03", "product": "PROD-016", "name": "Masala Peanuts Batch MP-2410-03"},
+        {"id": "BH-2410-05", "product": "PROD-017", "name": "Bhujia Batch BH-2410-05"},
+        {"id": "GC-2410-01", "product": "PROD-019", "name": "Groundnut Chikki Batch GC-2410-01"},
+    ]
+    net.query("""
+        UNWIND $batches AS item
+        MERGE (b:Batch {id: item.id})
+        SET b.name = item.name,
+            b.kind = 'final',
+            b.mfd = '2026-10-05'
+        WITH b, item
+        MATCH (p:Product {id: item.product})
+        MERGE (b)-[:OF_PRODUCT]->(p)
+        WITH b
+        MATCH (m:Batch {id: 'GOM-2409-04'})
+        MERGE (m)-[:USED_IN]->(b)
+    """, {"batches": extra_oil_batches})
+
     # Three namkeen batches for salt-only complaints (NK-2410-01, NK-2410-02, NK-2410-03)
-    # Only SL-0042 (salt) is common to all 3; no GN-2214
+    # SL-0042 is common to all 3; LOT-011 reaches only NK-01 through an intermediate mix.
     net.query("""
         MERGE (b1:Batch {id: 'NK-2410-01'})
         SET b1.name = 'Namkeen Mix NK-01', b1.kind = 'final'
@@ -165,7 +184,13 @@ def seed_database():
         WITH b1
         MATCH (sl:Lot {id: 'SL-0042'}) MERGE (sl)-[:USED_IN]->(b1)
         WITH b1
-        MATCH (l1:Lot {id: 'LOT-011'}) MERGE (l1)-[:USED_IN]->(b1)
+        MERGE (m:Batch {id: 'NKM-2409-01'})
+        SET m.name = 'Namkeen Seasoning Mix NKM-2409-01',
+            m.kind = 'mix'
+        WITH b1, m
+        MATCH (l1:Lot {id: 'LOT-011'})
+        MERGE (l1)-[:USED_IN]->(m)
+        MERGE (m)-[:USED_IN]->(b1)
 
         MERGE (b2:Batch {id: 'NK-2410-02'})
         SET b2.name = 'Namkeen Mix NK-02', b2.kind = 'final'
@@ -346,7 +371,8 @@ def seed_database():
 
     # Batch References
     batch_ref_ids = [
-        "MP-2410-01", "MP-2410-02", "BH-2410-03", "BH-2410-04",
+        "MP-2410-01", "MP-2410-02", "MP-2410-03",
+        "BH-2410-03", "BH-2410-04", "BH-2410-05", "GC-2410-01",
         "NK-2410-01", "NK-2410-02", "NK-2410-03", "NK-2410-04", "NK-2410-05", "NK-2410-06",
         "RP-2410-01"
     ]
@@ -359,7 +385,7 @@ def seed_database():
             SET br.network_batch_id = $id
         """, {"id": b_id})
 
-    # Deliveries and Stock for Hero GN-2214 batches
+    # Deliveries and Stock for hero groundnut-oil batches.
     # MP-2410-01 -> TH-01
     bm.query("""
         MATCH (br:BatchRef {id: 'MP-2410-01'})
@@ -393,6 +419,26 @@ def seed_database():
         MATCH (st:Store {code: 'TH-04'})
         MERGE (br)-[:DELIVERED_TO {qty: 50, on: '2026-10-10'}]->(st)
     """)
+
+    # Unreported downstream exposure: stock is still available at three more stores.
+    additional_oil_deliveries = [
+        ("MP-2410-03", "TH-04", 18),
+        ("BH-2410-05", "TH-05", 22),
+        ("GC-2410-01", "TH-06", 16),
+    ]
+    for batch_id, store_code, quantity in additional_oil_deliveries:
+        bm.query("""
+            MATCH (br:BatchRef {id: $batch_id})
+            MATCH (st:Store {code: $store_code})
+            MATCH (loc:Location {id: $location_id})
+            MERGE (br)-[:DELIVERED_TO {qty: 40, on: '2026-10-11'}]->(st)
+            MERGE (br)-[:STOCKED_AT {qty: $quantity, status: 'available'}]->(loc)
+        """, {
+            "batch_id": batch_id,
+            "store_code": store_code,
+            "location_id": f"{store_code}-LOC-Aisle-01",
+            "quantity": quantity,
+        })
 
     # Deliveries for namkeen / salt batches to stores TH-05 through TH-10
     namkeen_deliveries = [

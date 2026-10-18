@@ -393,14 +393,16 @@ def forward_trace(lot: str) -> Dict[str, Any]:
     t0 = time.time()
     trace_rows = _run_query("network", "trace", {"lot": lot})
     if not trace_rows:
-        return _wrap_envelope("not_in_graph", [], "forward_trace", {"lot": lot}, t0)
+        payload = graph_view.forward_trace(lot, [])
+        return _wrap_envelope("not_in_graph", [], "forward_trace", {"lot": lot}, t0, payload)
 
     final_batches = [r["id"] for r in trace_rows]
     deliv_rows = _run_query("bazaarmart", "deliveries", {"batch_ids": final_batches})
     delivered_stores = [r["store"] for r in deliv_rows]
 
     if not delivered_stores:
-        return _wrap_envelope("not_in_graph", [], "forward_trace", {"lot": lot}, t0)
+        payload = graph_view.forward_trace(lot, trace_rows)
+        return _wrap_envelope("not_in_graph", [], "forward_trace", {"lot": lot}, t0, payload)
 
     pur_rows = _run_query("bazaarmart", "purchases", {"batch_ids": final_batches})
     pur_count = pur_rows[0].get("count", 0) if pur_rows else 0
@@ -414,7 +416,8 @@ def forward_trace(lot: str) -> Dict[str, Any]:
     }]
 
     paths = [r.get("path") for r in trace_rows if "path" in r]
-    return _wrap_envelope("answered", rows, "forward_trace", {"lot": lot}, t0, paths=paths)
+    payload = graph_view.forward_trace(lot, trace_rows)
+    return _wrap_envelope("answered", rows, "forward_trace", {"lot": lot}, t0, payload, paths=paths)
 
 
 def exposure_routes(from_stores: List[str], max_days: int = 3) -> Dict[str, Any]:

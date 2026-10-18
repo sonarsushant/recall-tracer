@@ -25,6 +25,38 @@ def _compact_res(envelope: Dict[str, Any]) -> str:
     })
 
 
+def _create_llm() -> ChatOpenAI:
+    """Create the configured OpenAI or LM Studio chat model."""
+    provider = os.getenv("LLM_PROVIDER", "openai").strip().lower()
+
+    if provider == "lm_studio":
+        model_name = os.getenv("LM_STUDIO_MODEL", "qwen/qwen3-4b-2507").strip()
+        base_url = os.getenv("LM_STUDIO_BASE_URL", "http://localhost:1234/v1").strip()
+        if not model_name:
+            raise RuntimeError("LM_STUDIO_MODEL is missing or empty.")
+        if not base_url:
+            raise RuntimeError("LM_STUDIO_BASE_URL is missing or empty.")
+        return ChatOpenAI(
+            model=model_name,
+            base_url=base_url,
+            api_key="lm-studio",
+            temperature=0,
+        )
+
+    if provider == "openai":
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "OPENAI_API_KEY is missing or empty. Please set it in your environment or .env file."
+            )
+        model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        return ChatOpenAI(model=model_name, api_key=api_key, temperature=0)
+
+    raise RuntimeError(
+        f"Unsupported LLM_PROVIDER '{provider}'. Choose 'lm_studio' or 'openai'."
+    )
+
+
 # ==============================================================================
 # INVESTIGATOR AGENT TOOLS
 # ==============================================================================
@@ -160,14 +192,14 @@ Strict Investigation Workflow:
    d. If not in memory, call rank_lots_tool(depth=1).
       A lot is confirmed ONLY if its row status == 'confirmed' (never guess based on opinion).
    e. If a lot is confirmed at depth 1:
-      - Call forward_trace_tool for that lot.
+      - Call forward_trace_tool for that lot and retain EVERY downstream final batch it returns, including batches with no reported complaints.
       - Call exposure_routes_tool on the stores in the trace.
       - Call illness_tool to assess hazard severity.
-      - Call write_investigation_tool(case='complaints', status='open', summary=..., lot_id=..., batch_ids=...).
+      - Call write_investigation_tool(case='complaints', status='open', summary=..., lot_id=..., batch_ids=all downstream final batch IDs from forward_trace_tool).
       - Stop and request human confirmation.
    f. If depth 1 has 'inconclusive' rows and nothing 'confirmed':
       - Call rank_lots_tool(depth=2) to inspect intermediate mixes.
-      - If a lot is confirmed at depth 2, run the follow-up steps (forward_trace, exposure_routes, illness, write_investigation status='open') and stop for human confirmation.
+      - If a lot is confirmed at depth 2, run the follow-up steps (forward_trace, exposure_routes, illness, write_investigation status='open') and stop for human confirmation. Include EVERY downstream final batch from the forward trace in the investigation, not just complaint batches.
    g. If nothing is confirmed at depth 2:
       - Call write_investigation_tool(case='complaints', status='no_link', summary='No common root cause confirmed') and stop.
 
@@ -190,7 +222,7 @@ Store-Ops Execution Workflow:
    - STOP IMMEDIATELY unless investigation status is 'confirmed' or 'closed'.
 2. Call pull_list_tool with the investigation batch IDs.
 3. Call current_tasks_tool to see which stores already have dispatched tasks.
-4. Call dispatch_task_tool(store) once for each on-duty store that does NOT already have a task.
+4. Call dispatch_task_tool(store) once for every unique store returned by pull_list_tool that has available stock and an on-duty associate, including stores with no complaint reports. Do NOT restrict recall dispatch to complaint stores.
 5. Conclude by clearly summarizing:
    - Which stores were dispatched
    - Which associate is assigned to pull each location and batch
@@ -204,12 +236,7 @@ Store-Ops Execution Workflow:
 
 def investigator():
     """Factory function creating the Investigator ReAct agent."""
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is missing or empty. Please set it in your environment or .env file.")
-
-    model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    llm = ChatOpenAI(model=model_name, temperature=0)
+    llm = _create_llm()
 
     tools_list = [
         record_complaints_tool,
@@ -233,12 +260,7 @@ def investigator():
 
 def store_ops():
     """Factory function creating the Store-Ops ReAct agent."""
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is missing or empty. Please set it in your environment or .env file.")
-
-    model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    llm = ChatOpenAI(model=model_name, temperature=0)
+    llm = _create_llm()
 
     tools_list = [
         load_investigation_tool,

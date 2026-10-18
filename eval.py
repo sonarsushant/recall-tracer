@@ -28,52 +28,100 @@ def run_eval() -> int:
 
     # --------------------------------------------------------------------------
     # Check 1: Hero complaints, depth 1
-    # Condition: GN-2214 is NOT confirmed (status == "inconclusive"), coverage == 0.67, and salt lot score < 0.40
+    # Condition: salt reaches all complaints but is low-specificity and ruled out at depth 1.
     # --------------------------------------------------------------------------
     hero_complaints = [
-        {"store": "TH-01", "batch": "MP-2410-01", "text": "Severe allergic reaction and hospitalization after eating masala peanuts"},
-        {"store": "TH-02", "batch": "MP-2410-02", "text": "Allergic reaction to masala peanuts"},
-        {"store": "TH-03", "batch": "BH-2410-03", "text": "Anaphylaxis symptoms after eating bhujia in Pune"}
+        {"store": "TH-01", "batch": "MP-2410-01", "text": "Severe food poisoning and hospitalization after eating masala peanuts"},
+        {"store": "TH-02", "batch": "MP-2410-02", "text": "Severe vomiting and fever after eating masala peanuts"},
+        {"store": "TH-03", "batch": "BH-2410-03", "text": "Hospitalized with severe food poisoning after eating bhujia in Pune"}
     ]
     tools.record_complaints(hero_complaints)
     d1_res = tools.rank_lots(depth=1)
     d1_rows = d1_res.get("rows", [])
 
-    gn_row_d1 = next((r for r in d1_rows if r.get("lot") == "GN-2214"), None)
     salt_row = next((r for r in d1_rows if r.get("material") == "salt" or r.get("lot") == "SL-0042"), None)
+    oil_row_d1 = next((r for r in d1_rows if r.get("lot") == "GO-0611"), None)
 
     c1_pass = (
-        gn_row_d1 is not None
-        and gn_row_d1.get("status") == "inconclusive"
-        and gn_row_d1.get("coverage") == 0.67
-        and salt_row is not None
+        salt_row is not None
+        and salt_row.get("coverage") == 1.0
         and salt_row.get("score", 1.0) < 0.40
+        and salt_row.get("status") == "ruled_out"
+        and oil_row_d1 is None
     )
-    details_1 = f"GN status={gn_row_d1.get('status') if gn_row_d1 else None}, cov={gn_row_d1.get('coverage') if gn_row_d1 else None}, salt score={salt_row.get('score') if salt_row else None}"
-    results.append((1, "Hero complaints, depth 1", c1_pass, details_1))
+    details_1 = f"salt status={salt_row.get('status') if salt_row else None}, coverage={salt_row.get('coverage') if salt_row else None}, score={salt_row.get('score') if salt_row else None}, groundnut oil absent={oil_row_d1 is None}"
+    results.append((1, "Hero complaints, depth 1 rejects salt", c1_pass, details_1))
 
     # --------------------------------------------------------------------------
-    # Check 2: Hero complaints, depth 2
-    # Condition: GN-2214 is "confirmed" (coverage == 1.0, score >= 0.40) and path text contains intermediate mix RG-2409-04
+    # Check 2: Groundnut oil is confirmed at depth 2 and all downstream stock is recalled.
     # --------------------------------------------------------------------------
     d2_res = tools.rank_lots(depth=2)
     d2_rows = d2_res.get("rows", [])
 
-    gn_row_d2 = next((r for r in d2_rows if r.get("lot") == "GN-2214"), None)
-    c2_pass = False
-    details_2 = ""
-    if gn_row_d2:
-        cov_ok = gn_row_d2.get("coverage") == 1.0
-        score_ok = gn_row_d2.get("score", 0.0) >= 0.40
-        status_ok = gn_row_d2.get("status") == "confirmed"
-        paths_text = str(gn_row_d2.get("paths", []))
-        mix_ok = "RG-2409-04" in paths_text
+    oil_row_d2 = next((r for r in d2_rows if r.get("lot") == "GO-0611"), None)
+    oil_paths = str(oil_row_d2.get("paths", [])) if oil_row_d2 else ""
+    c2_rank_pass = (
+        oil_row_d2 is not None
+        and oil_row_d2.get("coverage") == 1.0
+        and oil_row_d2.get("score", 0.0) >= 0.40
+        and oil_row_d2.get("status") == "confirmed"
+        and "GOM-2409-04" in oil_paths
+    )
 
-        c2_pass = cov_ok and score_ok and status_ok and mix_ok
-        details_2 = f"GN status={gn_row_d2.get('status')}, cov={gn_row_d2.get('coverage')}, score={gn_row_d2.get('score')}, mix found={mix_ok}"
-    else:
-        details_2 = "GN-2214 not found in depth 2"
-    results.append((2, "Hero complaints, depth 2", c2_pass, details_2))
+    investigation = investigator.complaints_from(hero_complaints)
+    investigation_row = tools.load_investigation("INV-COMPLAINTS").get("rows", [])
+    investigation_open = (
+        investigation.get("lot") == "GO-0611"
+        and investigation.get("status") == "open"
+        and bool(investigation_row)
+        and investigation_row[0].get("status") == "open"
+    )
+    forward_trace = tools.forward_trace("GO-0611")
+    traced_rows = forward_trace.get("rows", [{}])[0].get("trace", [])
+    traced_batches = {row.get("id") for row in traced_rows}
+    traced_products = {row.get("name") for row in traced_rows}
+    expected_downstream_batches = {
+        "MP-2410-01",
+        "MP-2410-02",
+        "MP-2410-03",
+        "BH-2410-03",
+        "BH-2410-04",
+        "BH-2410-05",
+        "GC-2410-01",
+    }
+    full_trace_pass = (
+        traced_batches == expected_downstream_batches
+        and "Groundnut Chikki" in traced_products
+    )
+    confirmation = investigator.confirm() if investigation_open else {}
+    dispatch = store_ops.run() if confirmation.get("status") == "confirmed" else {}
+    dispatched_rows = dispatch.get("dispatched", [])
+    dispatched_stores = {row.get("store") for row in dispatched_rows}
+    recalled_batches = {row.get("batch") for row in dispatched_rows}
+    dispatch_pass = (
+        dispatched_stores == {"TH-01", "TH-02", "TH-03", "TH-04", "TH-05", "TH-06"}
+        and recalled_batches == {
+            "MP-2410-01",
+            "MP-2410-02",
+            "MP-2410-03",
+            "BH-2410-03",
+            "BH-2410-05",
+            "GC-2410-01",
+        }
+    )
+    c2_pass = c2_rank_pass and investigation_open and full_trace_pass and dispatch_pass
+    details_2 = (
+        f"oil status={oil_row_d2.get('status') if oil_row_d2 else None}, "
+        f"coverage={oil_row_d2.get('coverage') if oil_row_d2 else None}, "
+        f"score={oil_row_d2.get('score') if oil_row_d2 else None}, "
+        f"blend path={'GOM-2409-04' in oil_paths}, "
+        f"confirmed lot={confirmation.get('lot_id')}, "
+        f"downstream batches traced={len(traced_batches)}, "
+        f"unreported product traced={'Groundnut Chikki' in traced_products}, "
+        f"stores dispatched={sorted(dispatched_stores)}, "
+        f"batches recalled={sorted(recalled_batches)}"
+    )
+    results.append((2, "Depth 2 groundnut-oil recall dispatch", c2_pass, details_2))
 
     # --------------------------------------------------------------------------
     # Check 3: Salt-only complaints on three namkeen batches
@@ -85,11 +133,34 @@ def run_eval() -> int:
         {"store": "TH-07", "batch": "NK-2410-03", "text": "Stomach irritation from namkeen"}
     ]
     tools.record_complaints(salt_complaints)
-    c3_d1 = tools.rank_lots(depth=1).get("rows", [])
-    c3_d2 = tools.rank_lots(depth=2).get("rows", [])
+    c3_rank1 = tools.rank_lots(depth=1)
+    c3_rank2 = tools.rank_lots(depth=2)
+    c3_d1 = c3_rank1.get("rows", [])
+    c3_d2 = c3_rank2.get("rows", [])
+    salt_d1 = next((row for row in c3_d1 if row.get("lot") == "SL-0042"), None)
+    depth2_mix_candidate = next((row for row in c3_d2 if row.get("lot") == "LOT-011"), None)
     has_confirmed = any(r.get("status") == "confirmed" for r in (c3_d1 + c3_d2))
-    c3_pass = not has_confirmed
-    details_3 = f"Confirmed rows in depth 1: {sum(1 for r in c3_d1 if r.get('status') == 'confirmed')}, depth 2: {sum(1 for r in c3_d2 if r.get('status') == 'confirmed')}"
+    has_distinct_depth_graphs = (
+        c3_rank1.get("graph_payload", {}).get("edges")
+        != c3_rank2.get("graph_payload", {}).get("edges")
+    )
+    c3_pass = (
+        not has_confirmed
+        and salt_d1 is not None
+        and salt_d1.get("status") == "ruled_out"
+        and depth2_mix_candidate is not None
+        and depth2_mix_candidate.get("status") == "inconclusive"
+        and depth2_mix_candidate.get("coverage", 1.0) < 1.0
+        and any("NKM-2409-01" in path for path in depth2_mix_candidate.get("paths", []))
+        and has_distinct_depth_graphs
+    )
+    details_3 = (
+        f"salt depth-1={salt_d1.get('status') if salt_d1 else None}, "
+        f"LOT-011 depth-2 path through mix="
+        f"{any('NKM-2409-01' in path for path in depth2_mix_candidate.get('paths', [])) if depth2_mix_candidate else False}, "
+        f"depth-1/depth-2 graphs differ={has_distinct_depth_graphs}, "
+        f"confirmed candidates={sum(1 for r in (c3_d1 + c3_d2) if r.get('status') == 'confirmed')}"
+    )
     results.append((3, "Salt-only complaints on three namkeen batches", c3_pass, details_3))
 
     # --------------------------------------------------------------------------
@@ -131,22 +202,35 @@ def run_eval() -> int:
     # Condition: purchases count is 2
     # --------------------------------------------------------------------------
     ft_res = tools.forward_trace("RP-0099")
+    ft_scenario = investigator.complaints_from({"type": "forward_trace", "lot": "RP-0099"})
     pur_count = ft_res.get("rows", [{}])[0].get("purchases", -1)
-    c6_pass = (pur_count == 2)
-    details_6 = f"purchases={pur_count}"
+    graph_has_product_link = any(
+        edge.get("label") == "OF_PRODUCT"
+        for edge in ft_scenario.get("graph_payload", {}).get("edges", [])
+    )
+    c6_pass = (
+        pur_count == 2
+        and ft_scenario.get("action") == "forward_trace"
+        and ft_scenario.get("outcome") == "answered"
+        and graph_has_product_link
+    )
+    details_6 = (
+        f"purchases={pur_count}, standalone scenario outcome={ft_scenario.get('outcome')}, "
+        f"graph includes product link={graph_has_product_link}"
+    )
     results.append((6, "forward_trace('RP-0099')", c6_pass, details_6))
 
     # --------------------------------------------------------------------------
-    # Check 7: Save a GN-2214 finding, then run complaints_from for Pune / BH-2410-03
+    # Check 7: Save a GO-0611 finding, then run complaints_from for Pune / BH-2410-03
     # Condition: outcome == "from_memory", tool trace includes lots_behind and does NOT include rank_lots
     # --------------------------------------------------------------------------
     tools.save_finding(
-        lot="GN-2214",
+        lot="GO-0611",
         batch_ids=["BH-2410-03"],
-        text="Incident root cause GN-2214 confirmed from previous investigation."
+        text="Incident root cause GO-0611 (groundnut oil) confirmed from previous investigation."
     )
     pune_complaint = [
-        {"store": "TH-03", "batch": "BH-2410-03", "text": "Allergic reaction in Pune FC Road store"}
+        {"store": "TH-03", "batch": "BH-2410-03", "text": "Severe food poisoning in Pune FC Road store"}
     ]
     res_mem = investigator.complaints_from(pune_complaint)
     step_tools_7 = [s.get("trace", {}).get("tool") for s in res_mem.get("steps", []) if "trace" in s]
@@ -159,7 +243,7 @@ def run_eval() -> int:
         and not has_rank_lots
     )
     details_7 = f"outcome={res_mem.get('outcome')}, lots_behind_in_trace={has_lots_behind}, rank_lots_in_trace={has_rank_lots}"
-    results.append((7, "Save GN-2214 finding & memory replay Pune / BH-2410-03", c7_pass, details_7))
+    results.append((7, "Save GO-0611 finding & memory replay Pune / BH-2410-03", c7_pass, details_7))
 
     # --------------------------------------------------------------------------
     # SUMMARY TABLE

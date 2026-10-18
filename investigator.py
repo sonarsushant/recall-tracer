@@ -9,6 +9,41 @@ from typing import Any, Dict, List, Optional, Union
 import tools
 
 
+def forward_trace_lot(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve and visualize a lot's downstream batch and product exposure."""
+    lot = payload.get("lot") or payload.get("lot_id") or ""
+    resolved = tools.resolve_lot(lot)
+    if resolved["outcome"] == "unknown_entity":
+        candidates = [row.get("candidate") for row in resolved["rows"] if row.get("candidate")]
+        return {
+            "outcome": "unknown_entity",
+            "action": "forward_trace",
+            "message": f"Unknown lot '{lot}'. Did you mean: {', '.join(candidates)}?",
+            "candidates": candidates,
+            "steps": [resolved]
+        }
+
+    trace = tools.forward_trace(lot)
+    if trace["outcome"] == "not_in_graph":
+        message = f"No downstream finished batches or store exposure were found for lot {lot}."
+    else:
+        trace_row = trace["rows"][0]
+        message = (
+            f"Lot {lot} reaches {len(trace_row['batches'])} finished batches "
+            f"across {len(set(trace_row['stores']))} stores."
+        )
+
+    return {
+        "outcome": trace["outcome"],
+        "action": "forward_trace",
+        "lot": lot,
+        "message": message,
+        "trace": trace,
+        "graph_payload": trace["graph_payload"],
+        "steps": [resolved, trace]
+    }
+
+
 def notice(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     Supplier Notice path:
@@ -71,7 +106,8 @@ def notice(payload: Dict[str, Any]) -> Dict[str, Any]:
         "message": f"Active recall notice for lot {lot} traced to stores and inventory.",
         "steps": steps,
         "trace": res_trace,
-        "checklist": res_context["rows"][0] if res_context["rows"] else {}
+        "checklist": res_context["rows"][0] if res_context["rows"] else {},
+        "graph_payload": res_context["graph_payload"]
     }
 
 
@@ -79,9 +115,12 @@ def complaints_from(payload: Union[Dict[str, Any], List[Dict[str, Any]]]) -> Dic
     """
     Entry point for complaints investigation.
     Routes to notice() if payload contains notice information.
+    Routes forward-trace and notice actions to their dedicated workflows.
     Otherwise executes the complaint attribution workflow.
     """
     if isinstance(payload, dict):
+        if payload.get("type") == "forward_trace" or payload.get("action") == "forward_trace":
+            return forward_trace_lot(payload)
         if payload.get("notice") or payload.get("type") == "notice" or "reason" in payload or "issued_by" in payload:
             return notice(payload)
         items = [payload]
