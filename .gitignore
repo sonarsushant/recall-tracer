@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+scratch/
+.langgraph_api/*
+.langgraph_api/.langgraph_ops.pckl
